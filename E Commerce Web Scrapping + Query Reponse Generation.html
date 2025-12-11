@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shopify Scraper + Query Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1100px;
+      margin: auto;
+      padding: 20px;
+    }
+    .section {
+      padding: 16px;
+      background: #1e293b;
+      border-radius: 10px;
+      margin-bottom: 18px;
+      border: 1px solid #334155;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    h1 {
+      margin-bottom: 10px;
+      color: #f8fafc;
+    }
+    label {
+      font-size: 0.85rem;
+      color: #94a3b8;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin-top: 4px;
+      margin-bottom: 10px;
+    }
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      color: white;
+      margin-right: 6px;
+    }
+    .btn-connect { background: #10b981; }
+    .btn-disconnect { background: #ef4444; }
+    .btn-primary { background: #3b82f6; }
+    .btn-secondary { background: #64748b; }
+
+    .status-pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      margin-left: 10px;
+    }
+    .connected { background: #065f46; color: #a7f3d0; }
+    .disconnected { background: #7f1d1d; color: #fecaca; }
+
+    .log-box {
+      max-height: 300px;
+      overflow-y: auto;
+      background: #0f172a;
+      border: 1px solid #334155;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+    }
+    .log-entry {
+      border-bottom: 1px dashed #475569;
+      padding: 6px;
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+
+<body>
+<div class="container">
+
+  <h1>Shopify Scraper + Query Console</h1>
+
+  <!-- ------------------- CONNECT / DISCONNECT ------------------- -->
+  <div class="section">
+    <h3>WebSocket Connection</h3>
+
+    <button id="btnConnect" class="btn-connect">Connect</button>
+    <button id="btnDisconnect" class="btn-disconnect">Disconnect</button>
+
+    <span id="wsStatus" class="status-pill disconnected">Disconnected</span>
+  </div>
+
+  <!-- ------------------- SCRAPE SECTION ------------------- -->
+  <div class="section">
+    <h3>Run Scrape</h3>
+
+    <label>Site / Collection URL</label>
+    <input id="scrapeUrl" placeholder="https://example.com/collections/hoodies"/>
+
+    <button id="btnRunScrape" class="btn-primary">Run Scrape</button>
+  </div>
+
+  <!-- ------------------- WEEKLY SCRAPE ------------------- -->
+  <div class="section">
+    <h3>Set Weekly Scrape URL</h3>
+
+    <label>Weekly URL</label>
+    <input id="weeklyUrl" placeholder="https://example.com"/>
+
+    <button id="btnSetWeekly" class="btn-secondary">Set Weekly URL</button>
+  </div>
+
+  <!-- ------------------- QUERY BY PAGE URL ------------------- -->
+  <div class="section">
+    <h3>Ask Question (URL-based)</h3>
+
+    <label>Page URL</label>
+    <input id="queryPageUrl" placeholder="https://example.com/collections/t-shirts"/>
+
+    <label>Question</label>
+    <textarea id="queryTextUrl" placeholder="e.g., What is the cheapest t-shirt?"></textarea>
+
+    <button id="btnQueryUrl" class="btn-primary">Ask</button>
+  </div>
+
+  <!-- ------------------- QUERY USING CSV ------------------- -->
+  <div class="section">
+    <h3>Query Using CSV</h3>
+
+    <label>Upload CSV</label>
+    <input type="file" id="csvFile" />
+
+    <label>Question</label>
+    <textarea id="queryTextCsv" placeholder="What is the discount on item X?"></textarea>
+
+    <button id="btnQueryCsv" class="btn-secondary">Ask Using CSV</button>
+  </div>
+
+  <!-- ------------------- LOG ------------------- -->
+  <div class="section">
+    <h3>Logs</h3>
+    <button id="btnClearLog" class="btn-secondary" style="margin-bottom:10px;">Clear</button>
+    <div id="log" class="log-box"></div>
+  </div>
+
+</div>
+
+<script>
+  let socket = null;
+
+  const log = (msg, obj=null) => {
+    const logEl = document.getElementById("log");
+    const entry = document.createElement("div");
+    entry.className = "log-entry";
+    entry.textContent = msg + (obj ? ("\n" + JSON.stringify(obj, null, 2)) : "");
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  const setStatus = (connected) => {
+    const el = document.getElementById("wsStatus");
+    el.className = "status-pill " + (connected ? "connected" : "disconnected");
+    el.textContent = connected ? "Connected" : "Disconnected";
+  };
+
+  // ------------------ Connect Button ------------------
+  document.getElementById("btnConnect").addEventListener("click", () => {
+    if (socket && socket.connected) return;
+
+    socket = io("http://localhost:5000", { autoConnect: false });
+    socket.connect();
+
+    socket.on("connect", () => { setStatus(true); log("Connected"); });
+    socket.on("disconnect", () => { setStatus(false); log("Disconnected"); });
+
+    // **All backend events**
+    socket.on("system", (data) => log("SYSTEM", data));
+    socket.on("run-scrape-status", (d) => log("SCRAPE STATUS", d));
+    socket.on("run-scrape-result", (d) => log("SCRAPE RESULT", d));
+    socket.on("set-weekly-url-result", (d) => log("WEEKLY SET", d));
+    socket.on("weekly-scrape-result", (d) => log("WEEKLY SCRAPE RESULT", d));
+    socket.on("query_result", (d) => log("QUERY RESULT", d));
+
+    log("Connecting…");
+  });
+
+  // ------------------ Disconnect Button ------------------
+  document.getElementById("btnDisconnect").addEventListener("click", () => {
+    if (socket) {
+      socket.disconnect();
+      setStatus(false);
+      log("Manually disconnected");
+    }
+  });
+
+  // ------------------ Run Scrape ------------------
+  document.getElementById("btnRunScrape").addEventListener("click", () => {
+    const url = document.getElementById("scrapeUrl").value.trim();
+    if (!url) return alert("Enter URL");
+
+    socket.emit("run-scrape", { url });
+    log("Sent SCRAPE request: " + url);
+  });
+
+  // ------------------ Set Weekly URL ------------------
+  document.getElementById("btnSetWeekly").addEventListener("click", () => {
+    const url = document.getElementById("weeklyUrl").value.trim();
+    if (!url) return alert("Enter weekly URL");
+
+    socket.emit("set-weekly-url", { url });
+    log("Sent weekly URL set");
+  });
+
+  // ------------------ Query by URL ------------------
+  document.getElementById("btnQueryUrl").addEventListener("click", () => {
+    const pageUrl = document.getElementById("queryPageUrl").value.trim();
+    const question = document.getElementById("queryTextUrl").value.trim();
+
+    if (!pageUrl || !question) return alert("Enter both URL and question");
+
+    socket.emit("query_with_inputs", {
+      page_url: pageUrl,
+      query: question,
+      request_id: "url-" + Date.now()
+    });
+
+    log("Sent query (URL): " + question);
+  });
+
+  // ------------------ Query using CSV ------------------
+  document.getElementById("btnQueryCsv").addEventListener("click", () => {
+    const file = document.getElementById("csvFile").files[0];
+    const question = document.getElementById("queryTextCsv").value.trim();
+
+    if (!file || !question) return alert("Please upload CSV & enter question");
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      socket.emit("query_with_inputs", {
+        csv_text: e.target.result,
+        query: question,
+        request_id: "csv-" + Date.now()
+      });
+
+      log("Sent query (CSV): " + question);
+    };
+    reader.readAsText(file);
+  });
+
+  // ------------------ Clear Log ------------------
+  document.getElementById("btnClearLog").addEventListener("click", () => {
+    document.getElementById("log").innerHTML = "";
+  });
+</script>
+
+</body>
+</html>

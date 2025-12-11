@@ -1,0 +1,11 @@
+tldextract
+flask==3.0.2
+requests
+pandas
+beautifulsoup4
+nltk
+scikit-learn
+schedule
+flask-socketio
+eventlet
+numpy
