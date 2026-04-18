@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Shopify Scraper – HTTP & WebSocket Test</title>
+
+  <!-- Socket.IO client -->
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+    h1, h2, h3 {
+      margin-bottom: 6px;
+    }
+    .section {
+      background: #fff;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    label {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    input, textarea {
+      width: 100%;
+      margin: 4px 0 8px 0;
+      padding: 6px 8px;
+      box-sizing: border-box;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+    textarea {
+      font-family: monospace;
+    }
+    button {
+      padding: 8px 14px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 8px;
+      margin-top: 2px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button.secondary {
+      background: #6c757d;
+    }
+    button.secondary:hover {
+      background: #545b62;
+    }
+    #log {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      border-radius: 5px;
+      height: 320px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-size: 13px;
+      font-family: Consolas, Menlo, Monaco, monospace;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Shopify Scraper Test UI</h1>
+  <p>
+    Test your <code>app.py</code> scraper (HTTP + Socket.IO).  
+    It supports:
+    <code>/health</code>, <code>/run-scrape</code>, <code>/set-weekly-url</code>, and WS events
+    <code>"run-scrape"</code>, <code>"set-weekly-url"</code>, <code>"weekly-scrape-result"</code>.
+  </p>
+
+  <!-- Connection section -->
+  <div class="section">
+    <h2>1. Socket.IO Connection</h2>
+    <label>Server URL (no path):</label>
+    <input
+      id="server_url"
+      type="text"
+      value="http://localhost:5000"
+      placeholder="http://localhost:5000"
+    />
+
+    <button onclick="connectWS()">Connect</button>
+    <button class="secondary" onclick="disconnectWS()">Disconnect</button>
+  </div>
+
+  <!-- HTTP test section -->
+  <div class="section">
+    <h2>2. HTTP API Tests</h2>
+
+    <h3>Health Check</h3>
+    <button onclick="httpHealth()">GET /health</button>
+
+    <hr />
+
+    <h3>Run Scrape (HTTP POST /run-scrape)</h3>
+    <label>URL (site root or /collections/...):</label>
+    <input
+      id="http_scrape_url"
+      type="text"
+      value="https://gangslifestyle.com/"
+      placeholder="https://example.com/ or https://example.com/collections/xyz"
+    />
+    <button onclick="httpRunScrape()">POST /run-scrape</button>
+    <p style="font-size: 12px; color: #555;">
+      If the scrape succeeds, this endpoint returns a CSV file download.  
+      Errors are returned as JSON and will be shown in the log.
+    </p>
+  </div>
+
+  <!-- WebSocket run-scrape section -->
+  <div class="section">
+    <h2>3. WebSocket – Run Scrape</h2>
+
+    <label>URL (site root or /collections/...):</label>
+    <input
+      id="ws_scrape_url"
+      type="text"
+      value="https://gangslifestyle.com/"
+      placeholder="https://example.com/ or https://example.com/collections/xyz"
+    />
+
+    <button onclick="wsRunScrape()">Emit "run-scrape"</button>
+
+    <p style="font-size: 12px; color: #555;">
+      The server will emit:
+      <code>run-scrape-status</code> (start) and
+      <code>run-scrape-result</code> (final result with file info).
+    </p>
+  </div>
+
+  <!-- WebSocket weekly URL section -->
+  <div class="section">
+    <h2>4. WebSocket – Set Weekly URL</h2>
+
+    <label>Weekly Scrape URL:</label>
+    <input
+      id="ws_weekly_url"
+      type="text"
+      value="https://gangslifestyle.com/"
+      placeholder="https://example.com/"
+    />
+
+    <button onclick="wsSetWeeklyUrl()">Emit "set-weekly-url"</button>
+
+    <p style="font-size: 12px; color: #555;">
+      Server responds with <code>set-weekly-url-result</code>.  
+      Weekly background runs will broadcast <code>weekly-scrape-result</code>.
+    </p>
+  </div>
+
+  <!-- Logs -->
+  <div class="section">
+    <h2>5. Logs</h2>
+    <button class="secondary" onclick="clearLog()">Clear Log</button>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    let socket = null;
+
+    function log(msg) {
+      const logBox = document.getElementById("log");
+      const ts = new Date().toISOString();
+      logBox.textContent += `[${ts}] ${msg}\n`;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById("log").textContent = "";
+    }
+
+    // --------- Socket.IO connection ----------
+
+    function connectWS() {
+      const baseUrl = document.getElementById("server_url").value.trim();
+
+      if (!baseUrl) {
+        log("[Error] Please enter a server URL.");
+        return;
+      }
+
+      if (socket && socket.connected) {
+        log("[Info] Already connected.");
+        return;
+      }
+
+      log("[Info] Connecting to " + baseUrl + " ...");
+
+      // For Flask-SocketIO, use the HTTP URL (Socket.IO upgrades to WebSocket)
+      socket = io(baseUrl, {
+        transports: ["websocket"],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        timeout: 10000
+      });
+
+      socket.on("connect", () => {
+        log("[Connected] Socket.IO ID: " + socket.id);
+      });
+
+      socket.on("disconnect", () => {
+        log("[Disconnected]");
+      });
+
+      socket.on("connect_error", (err) => {
+        log("[Error] Connection failed: " + err.message);
+      });
+
+      // === Server custom events ===
+
+      // System messages (from ws_connect)
+      socket.on("system", (data) => {
+        log("[System] " + JSON.stringify(data));
+      });
+
+      // Run-scrape status updates
+      socket.on("run-scrape-status", (data) => {
+        log("[run-scrape-status] " + JSON.stringify(data, null, 2));
+      });
+
+      // Run-scrape final result
+      socket.on("run-scrape-result", (data) => {
+        log("[run-scrape-result]");
+        log(JSON.stringify(data, null, 2));
+      });
+
+      // Weekly URL set result
+      socket.on("set-weekly-url-result", (data) => {
+        log("[set-weekly-url-result]");
+        log(JSON.stringify(data, null, 2));
+      });
+
+      // Weekly scheduled scraper broadcast
+      socket.on("weekly-scrape-result", (data) => {
+        log("[weekly-scrape-result]");
+        log(JSON.stringify(data, null, 2));
+      });
+    }
+
+    function disconnectWS() {
+      if (socket) {
+        socket.disconnect();
+        log("[Action] Manual disconnect requested.");
+      } else {
+        log("[Info] No active socket to disconnect.");
+      }
+    }
+
+    // --------- WebSocket actions ----------
+
+    function wsRunScrape() {
+      if (!socket || !socket.connected) {
+        log("[Error] Connect Socket.IO first.");
+        return;
+      }
+
+      const url = document.getElementById("ws_scrape_url").value.trim();
+      if (!url) {
+        log("[Error] Please enter a URL for run-scrape.");
+        return;
+      }
+
+      const payload = { url: url };
+      log("[Action] Emitting 'run-scrape' with payload:");
+      log(JSON.stringify(payload, null, 2));
+
+      socket.emit("run-scrape", payload);
+    }
+
+    function wsSetWeeklyUrl() {
+      if (!socket || !socket.connected) {
+        log("[Error] Connect Socket.IO first.");
+        return;
+      }
+
+      const url = document.getElementById("ws_weekly_url").value.trim();
+      if (!url) {
+        log("[Error] Please enter a weekly URL.");
+        return;
+      }
+
+      const payload = { url: url };
+      log("[Action] Emitting 'set-weekly-url' with payload:");
+      log(JSON.stringify(payload, null, 2));
+
+      socket.emit("set-weekly-url", payload);
+    }
+
+    // --------- HTTP helpers ----------
+
+    function getBaseHttpUrl() {
+      // Strip trailing slash for consistent endpoint concatenation
+      const raw = document.getElementById("server_url").value.trim();
+      if (!raw) return null;
+      return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+    }
+
+    async function httpHealth() {
+      const base = getBaseHttpUrl();
+      if (!base) {
+        log("[Error] Please enter a server URL.");
+        return;
+      }
+
+      const url = base + "/health";
+      log("[HTTP] GET " + url);
+
+      try {
+        const resp = await fetch(url);
+        const text = await resp.text();
+
+        log(`[HTTP] Status: ${resp.status}`);
+        try {
+          const json = JSON.parse(text);
+          log("[HTTP] Response JSON:");
+          log(JSON.stringify(json, null, 2));
+        } catch {
+          log("[HTTP] Non-JSON response:");
+          log(text);
+        }
+      } catch (err) {
+        log("[HTTP Error] " + err.message);
+      }
+    }
+
+    async function httpRunScrape() {
+      const base = getBaseHttpUrl();
+      if (!base) {
+        log("[Error] Please enter a server URL.");
+        return;
+      }
+
+      const scrapeUrl = document.getElementById("http_scrape_url").value.trim();
+      if (!scrapeUrl) {
+        log("[Error] Please enter a URL to scrape.");
+        return;
+      }
+
+      const endpoint = base + "/run-scrape";
+      const body = { url: scrapeUrl };
+
+      log("[HTTP] POST " + endpoint);
+      log("[HTTP] Body: " + JSON.stringify(body));
+
+      try {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(body)
+        });
+
+        const contentType = resp.headers.get("content-type") || "";
+        log(`[HTTP] Status: ${resp.status} | Content-Type: ${contentType}`);
+
+        // If it's JSON, it's probably an error message
+        if (contentType.includes("application/json")) {
+          const json = await resp.json();
+          log("[HTTP] JSON response:");
+          log(JSON.stringify(json, null, 2));
+        } else {
+          // Likely CSV file (success) – we can't auto-download from here,
+          // but we can tell the user it worked.
+          const blob = await resp.blob();
+          log("[HTTP] Received non-JSON response (likely CSV). Size: " + blob.size + " bytes");
+
+          // Optional: create a temporary download link
+          const downloadUrl = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = downloadUrl;
+          a.download = "scrape_result.csv";
+          a.style.display = "none";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(downloadUrl);
+          log("[HTTP] Triggered CSV download as 'scrape_result.csv'.");
+        }
+      } catch (err) {
+        log("[HTTP Error] " + err.message);
+      }
+    }
+  </script>
+
+</body>
+</html>

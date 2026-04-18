@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+
+pandas
+numpy
+requests
+beautifulsoup4
+lxml
+
+scikit-learn
+nltk
+
+schedule
+python-multipart
