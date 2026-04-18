@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WSS Test - Query API (File Upload)</title>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        h2 {
+            margin-bottom: 5px;
+        }
+        #log {
+            background: #111;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 5px;
+            height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 14px;
+        }
+        input, textarea {
+            width: 100%;
+            margin: 6px 0;
+        }
+        button {
+            padding: 10px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .row {
+            margin-bottom: 10px;
+        }
+        #csv_preview {
+            background: #fff;
+            border: 1px solid #ccc;
+            padding: 6px;
+            border-radius: 4px;
+            height: 100px;
+            overflow-y: auto;
+            font-size: 13px;
+            white-space: pre;
+        }
+        label {
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>WebSocket (WSS) Test Page</h2>
+<p>Use this page to test your Flask-SocketIO WebSocket backend with a CSV file upload.</p>
+
+<div class="row">
+    <label>WebSocket URL:</label>
+    <input id="ws_url" type="text" value="ws://localhost:5000">
+</div>
+
+<div class="row">
+    <button onclick="connectWS()">Connect</button>
+    <button onclick="disconnectWS()">Disconnect</button>
+    <button onclick="resetSession()">Reset Session</button>
+</div>
+
+<hr>
+
+<h3>Upload CSV</h3>
+
+<div class="row">
+    <input id="csv_file" type="file" accept=".csv,text/csv" onchange="handleCsvFileChange(event)">
+</div>
+
+<div class="row">
+    <label>CSV Preview (first few lines):</label>
+    <div id="csv_preview">(No file loaded yet)</div>
+</div>
+
+<hr>
+
+<h3>Send Query</h3>
+
+<div class="row">
+    <label>Query Text:</label>
+    <input id="query_text" value="Show me Nivea lotion" />
+</div>
+
+<div class="row">
+    <button onclick="sendQuery()">Send Query</button>
+</div>
+
+<hr>
+
+<h3>Logs</h3>
+<div id="log"></div>
+
+<script>
+    let socket = null;
+    let uploadedCsvText = "";  // holds the contents of the uploaded CSV file
+
+    function log(msg) {
+        let logBox = document.getElementById("log");
+        logBox.textContent += msg + "\n";
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function connectWS() {
+        const WS_URL = document.getElementById("ws_url").value;
+
+        if (socket && socket.connected) {
+            log("[Info] Already connected.");
+            return;
+        }
+
+        log("[Info] Connecting to " + WS_URL + " ...");
+
+        socket = io(WS_URL, {
+            transports: ["websocket"],
+            reconnection: true,
+            reconnectionAttempts: 5,
+            timeout: 5000
+        });
+
+        socket.on("connect", () => {
+            log("[Connected] WS ID: " + socket.id);
+        });
+
+        socket.on("disconnect", () => {
+            log("[Disconnected]");
+        });
+
+        socket.on("system", (data) => {
+            log("[System] " + JSON.stringify(data));
+        });
+
+        socket.on("query_result", (data) => {
+            log("[QUERY RESULT]");
+            log(JSON.stringify(data, null, 2));
+        });
+
+        socket.on("connect_error", (err) => {
+            log("[Error] Connection failed: " + err.message);
+        });
+    }
+
+    function disconnectWS() {
+        if (socket) {
+            socket.disconnect();
+            log("[Action] Manual disconnect");
+        }
+    }
+
+    function resetSession() {
+        if (socket && socket.connected) {
+            socket.emit("reset_session");
+            log("[Action] Sent reset_session event");
+        } else {
+            log("[Error] Not connected");
+        }
+    }
+
+    function handleCsvFileChange(event) {
+        const file = event.target.files[0];
+        const previewBox = document.getElementById("csv_preview");
+
+        if (!file) {
+            uploadedCsvText = "";
+            previewBox.textContent = "(No file loaded yet)";
+            log("[Info] No file selected.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            uploadedCsvText = e.target.result || "";
+            if (!uploadedCsvText.trim()) {
+                previewBox.textContent = "(File is empty)";
+                log("[Warning] CSV file seems empty.");
+                return;
+            }
+
+            // Show first few lines as a preview
+            const lines = uploadedCsvText.split(/\r?\n/).slice(0, 5).join("\n");
+            previewBox.textContent = lines;
+            log("[Info] CSV file loaded: " + file.name + " (" + file.size + " bytes)");
+        };
+        reader.onerror = function(e) {
+            uploadedCsvText = "";
+            previewBox.textContent = "(Error reading file)";
+            log("[Error] Failed to read CSV file: " + e.message);
+        };
+
+        reader.readAsText(file);
+        log("[Action] Reading CSV file: " + file.name);
+    }
+
+    function sendQuery() {
+        if (!socket || !socket.connected) {
+            log("[Error] Connect first!");
+            return;
+        }
+
+        if (!uploadedCsvText || uploadedCsvText.trim() === "") {
+            log("[Error] Please upload a CSV file before sending a query.");
+            return;
+        }
+
+        const queryText = document.getElementById("query_text").value;
+
+        const payload = {
+            csv_text: uploadedCsvText,      // IMPORTANT: backend still expects csv_text
+            query: queryText,
+            request_id: "req-" + Date.now()
+        };
+
+        log("[Action] Sending query:");
+        log(JSON.stringify(payload, null, 2));
+
+        socket.emit("query_with_inputs", payload);
+    }
+</script>
+
+</body>
+</html>
